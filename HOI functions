@@ -44,13 +44,14 @@ HOI <- function(t, x, parameters){
       Bm[i,] <- B[i,,] %*% x
     }
     x[x < THRESH] <- 0
-    x[x > 1/THRESH] <- 0
+    # Fixed!! was set equal to zero, not 1/THRESH. Now, when values get large, they are capped at 1/THRESH, which will be 10,000 or 100,000 or so. 
+    x[x > 1/THRESH] <- 1/THRESH
     dxdt <- x * (r - (A + Bm) %*% x)
     return(list(dxdt))
   })
 }
 
-get_B_lognormal <- function(n, meanlog = 0, sdlog = 1){
+get_B_lognormal <- function(n, meanlog = 0, sdlog = 1, B_diag = 0){
 
   B <- round(array(rlnorm(n * n * n, meanlog = meanlog, sdlog = sdlog), c(n, n, n)), 2)
   
@@ -64,7 +65,9 @@ get_B_lognormal <- function(n, meanlog = 0, sdlog = 1){
     }
 
     diag(B[i,,]) <- 0
-    
+
+    # adds in a cubic self-regulation term 
+    B[i,i,i] <- B_diag
 
     B[i,,] <- (B[i, ,] + t(B[i,,])) / 2 
   }
@@ -85,6 +88,7 @@ par_grid <- expand.grid(nsim = 1:5,
                         A_sd = seq(0.5,3 , length = 6),
                         B_mean = seq(0.1,1 , length = 10),
                         B_sd = seq(0.5,3 , length = 6),
+                        B_diag = 0,
                         n_end = 0)
 
 # Fit a model with 100 species
@@ -115,7 +119,7 @@ result <- foreach(i = 1:nrow(par_grid), .combine = rbind, .packages = c("deSolve
   # replace rexp with rlnorm
   
   ### generate a B matrix
-  B <- get_B_lognormal(nspp, meanlog = new_par_grid$B_mean, sdlog = new_par_grid$B_sd)
+  B <- get_B_lognormal(nspp, meanlog = new_par_grid$B_mean, sdlog = new_par_grid$B_sd, B_diag = new_par_grid$B_diag)
   
   # assign a diagonal to A
   diag(A) <- 1 
@@ -157,6 +161,7 @@ result <- foreach(i = 1:nrow(par_grid), .combine = rbind, .packages = c("deSolve
       A_sd = new_par_grid$A_sd,
       B_mean = new_par_grid$B_mean,
       B_sd = new_par_grid$B_sd,
+      B_diag = new_par_grid$B_diag,
       n_end = n_end_2D,
       model = "Pairwise"
     ),
@@ -167,6 +172,7 @@ result <- foreach(i = 1:nrow(par_grid), .combine = rbind, .packages = c("deSolve
       A_sd = new_par_grid$A_sd,
       B_mean = new_par_grid$B_mean,
       B_sd = new_par_grid$B_sd,
+      B_diag = new_par_grid$B_diag,
       n_end = n_end_3D,
       model = "HOI"
     )
