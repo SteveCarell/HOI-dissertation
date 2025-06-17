@@ -1,0 +1,270 @@
+#### organization ####
+rm(list=ls())
+
+library(tidyverse)
+library(deSolve)
+library(phaseR)
+library(ggplot2)
+library(foreach)
+library(doSNOW)
+library(doParallel)
+library(viridis)
+library(ggpmisc)
+
+# the threshold for extinction -- stored as a global variable
+THRESH <<- 1e-6
+
+
+#### model ####
+LV_multispecies_competition <- function(t, x, parameters) {
+  
+  with(as.list(parameters), {
+    
+    # zero out species below the threshold    
+    x[x<THRESH] <- 0
+    
+    # Lotka-Volterra in matrix notation
+    dxdt <- r*x*(1 - A%*%x)
+    
+    # equivalent to the mathematical equation:
+    # dxi/dt <- ri*xi - aii*xi^2 - sum(a_ij * xi * xj)
+    
+    # return rate of change
+    return(list(dxdt))
+    
+  })
+  
+}
+
+##HOI model
+HOI <- function(t, x, parameters){
+  with(as.list(c(x, parameters)), {
+    Bm <- A
+    for (i in 1:nrow(A)){
+      Bm[i,] <- B[i,,] %*% x
+    }
+    x[x < THRESH] <- 0
+    x[x > 1/THRESH] <- 0
+    dxdt <- x * (r - (A + Bm) %*% x)
+    return(list(dxdt))
+  })
+}
+
+get_B_lognormal <- function(n, meanlog = 0, sdlog = 1){
+
+  B <- round(array(rlnorm(n * n * n, meanlog = meanlog, sdlog = sdlog), c(n, n, n)), 2)
+  
+  for (i in 1:n){
+
+    for (j in 1:n){
+      if (i == j){
+        B[i,j,] <- 0
+        B[i,,j] <- 0
+      }
+    }
+
+    diag(B[i,,]) <- 0
+    
+
+    B[i,,] <- (B[i, ,] + t(B[i,,])) / 2 
+  }
+  
+  return(B)
+}
+
+# start to run foreach codes
+set.seed(555)
+
+if(exists("doParallel") && getDoParRegistered()) {
+  stopImplicitCluster()
+}
+
+par_grid <- expand.grid(nsim = 1:5, 
+                        n_start = 30, 
+                        A_mean = seq(0.1,1 , length = 10),
+                        A_sd = seq(0.5,3 , length = 6),
+                        B_mean = seq(0.1,1 , length = 10),
+                        B_sd = seq(0.5,3 , length = 6),
+                        n_end = 0)
+
+# Fit a model with 100 species
+
+# look into the foreach command in R
+cl <- makeCluster(ceiling(detectCores() / 4))
+registerDoSNOW(cl)
+clusterExport(cl, c("LV_multispecies_competition", "THRESH", "HOI", "get_B_lognormal"))
+
+#showing the progress bar
+total_iterations <- nrow(par_grid)
+pb <- txtProgressBar(max = total_iterations, style = 3)
+progress <- function(n) setTxtProgressBar(pb, n)
+opts <- list(progress = progress)
+
+#running the foreach loop
+result <- foreach(i = 1:nrow(par_grid), .combine = rbind, .packages = c("deSolve", "dplyr", "tidyr"), .options.snow = opts) %dopar% {
+  new_par_grid <- par_grid[i, ]
+  
+  # # specify the seed -- allows us to all have the same results
+  # set.seed(10)
+  set.seed(555 + i)
+  # sample the number of species
+  nspp <- new_par_grid$n_start 
+  
+  # matrix of interaction coefficients
+  A <- matrix(rlnorm(nspp^2, meanlog = new_par_grid$A_mean, sdlog =  new_par_grid$A_sd), nrow = nspp, ncol = nspp)
+  # replace rexp with rlnorm
+  
+  ### generate a B matrix
+  B <- get_B_lognormal(nspp, meanlog = new_par_grid$B_mean, sdlog = new_par_grid$B_sd)
+  
+  # assign a diagonal to A
+  diag(A) <- 1 
+  
+  # specify growth rates
+  #r <- rgamma(nspp, shape = new_par_grid$r_shape, rate = new_par_grid$r_rate) 
+  r <- rlnorm(nspp, meanlog = 0.352, sdlog = 0.327)
+  
+  # parameters and initial conditions
+  parameters_2D = list(A = A, r = r)
+  parameters_3D = list(A = A, B = B, r = r) 
+  
+  # specify initial abundances
+  state <- rep(0.1, nspp)
+  
+  # Time step and time increment for calculating the rate of change)
+  times <- seq(0, 1e6, by = 1000)
+  
+  # run the numerical solution, store as a tibble
+  result2D <- ode(y = state, times = times, func = LV_multispecies_competition, parms = parameters_2D, method = 'vode') %>% data.frame() %>% as_tibble()
+  result3D <- ode(y = state, times = times, func = HOI, parms = parameters_3D, method = 'vode') %>% data.frame() %>% as_tibble()
+  
+  # clean up the result by assigning extinct species to zero
+  result2D[result2D<THRESH] <- 0
+  result3D[result3D<THRESH] <- 0
+  
+  # gather the species together (i.e., stack them)
+  result_gather_2D <- result2D %>% gather(species, abundance, -time)
+  result_gather_3D <- result3D %>% gather(species, abundance, -time)
+  
+  n_end_2D <- sum(result2D[nrow(result2D), -1] > THRESH)
+  n_end_3D <- sum(result3D[nrow(result3D), -1] > THRESH)
+  
+  rbind(
+    data.frame(
+      nsim = new_par_grid$nsim,
+      n_start = nspp,
+      A_mean = new_par_grid$A_mean,
+      A_sd = new_par_grid$A_sd,
+      B_mean = new_par_grid$B_mean,
+      B_sd = new_par_grid$B_sd,
+      n_end = n_end_2D,
+      model = "Pairwise"
+    ),
+    data.frame(
+      nsim = new_par_grid$nsim,
+      n_start = nspp,
+      A_mean = new_par_grid$A_mean,
+      A_sd = new_par_grid$A_sd,
+      B_mean = new_par_grid$B_mean,
+      B_sd = new_par_grid$B_sd,
+      n_end = n_end_3D,
+      model = "HOI"
+    )
+  )
+}
+
+#close the foreach codes
+close(pb)
+stopCluster(cl)
+
+#add new column
+result <- result %>% mutate(propn = n_end / n_start)
+
+#combine the different simulation results into one result
+coexistence_comparison <- result %>% 
+  group_by(model, A_mean, A_sd, B_mean, B_sd) %>%
+  summarize(mean_propn = mean(propn), .groups = 'drop')
+
+#write the dataset into a csv file
+HOI_dataset <- coexistence_comparison %>%
+  pivot_wider(names_from = model,
+              values_from = mean_propn,
+              names_prefix = 'living_propn_')%>%
+  mutate(HOI_effect = living_propn_HOI - living_propn_Pairwise,
+         HOI_relative = living_propn_HOI/living_propn_Pairwise)
+write.csv(HOI_dataset,'coexistence_comparison.csv', row.names = FALSE)
+
+#import the dataset
+HOI_data <- read.csv('coexistence_comparison.csv')
+
+# print the relative plot
+combina_HOIplot <- HOI_data %>%
+  filter(B_mean %in% c(0.2, 0.4, 0.6, 0.8, 1) & A_sd == B_sd) %>%
+  mutate(param_label = paste0("μB=", B_mean, ", σA=", A_sd, ", σB=", B_sd),
+         sd_label = paste0("σA=σB=", A_sd),
+         bmean_label = paste0("μB=", B_mean)) %>%
+  arrange(param_label, A_mean) %>%
+  ggplot(aes(x = A_mean)) +
+  geom_line(aes(y = living_propn_Pairwise,color = "Pairwise")) +
+  geom_line(aes(y = living_propn_HOI,color = "HOI")) +
+  facet_grid(sd_label ~ bmean_label) +
+  ylim(0.025, 0.13)+
+  scale_color_manual(values = c("Pairwise" = "blue", "HOI" = "red"), name = "Model")+
+  labs(x = "The strength of Pairwise model (μA)",
+       y = "Living proportion",
+       title = "The comparison performance of models under different parameters") +
+  theme_bw()
+
+print(combina_HOIplot)
+
+#converting the data to longer format
+subdata_HOI_data <- HOI_data %>%
+  mutate(mean_ratio = A_mean/B_mean,
+         sd_ratio = A_sd/B_sd,
+         sd_ratio_group = case_when(sd_ratio < 1 ~ 'Low relative (ratio value < 1)',
+                                    sd_ratio == 1 ~ 'Equal (ratio value = 1)',
+                                    sd_ratio > 1 ~ 'High relative (ratio value >1)')) %>%
+  pivot_longer(cols = c(living_propn_HOI, living_propn_Pairwise),
+               names_to = "model",
+               values_to = "propn")
+
+#drawing regression plots
+regression_HOIplot <- ggplot(subdata_HOI_data, aes(x = mean_ratio, y = propn)) +
+  geom_smooth(aes(color = sd_ratio_group, linetype = model), method = 'lm', se = FALSE) +
+  scale_linetype_manual(values = c("living_propn_HOI" = "solid",
+                                   "living_propn_Pairwise" = "dashed"))+
+  scale_color_manual(values = c('Low relative (ratio value < 1)' = 'green',
+                                'Equal (ratio value = 1)' = 'yellow',
+                                'High relative (ratio value >1)' = 'darkblue'),
+                     name = 'The values of σA/σB') +
+  labs(x = 'μA/μB (The ratio of Pairwise/HOI model strength)',
+       y = 'Living proportion under HOI model',
+       title = 'Regression relationship') +
+  theme_bw()
+
+print(regression_HOIplot)
+
+#adding new columns 
+new_subdata_HOI_data <- HOI_data %>%
+  mutate(mean_ratio = A_mean / B_mean,
+         sd_ratio = A_sd/B_sd,
+         relative_change = (living_propn_HOI - living_propn_Pairwise) / living_propn_Pairwise,
+         sd_ratio_group = case_when(sd_ratio < 1 ~ 'Low relative (ratio value < 1)',
+                                    sd_ratio == 1 ~ 'Equal (ratio value = 1)',
+                                    sd_ratio > 1 ~ 'High relative (ratio value >1)'))
+
+relative_regression_HOIplot <- ggplot(new_subdata_HOI_data, aes(x = mean_ratio, y = relative_change)) +
+  geom_hline(yintercept = 0) +
+  geom_smooth(aes(color = sd_ratio_group), method = "loess", se = FALSE, alpha = 0.2) +
+  scale_color_manual(values = c('Low relative (ratio value < 1)' = 'green',
+                                'Equal (ratio value = 1)' = 'yellow',
+                                'High relative (ratio value >1)' = 'darkblue'),
+                     name = 'The values of σA/σB') +
+  
+  labs(x = "μA/μB (The ratio of Pairwise/HOI model strength)",
+       y = "Relative changes [(HOI-Pairwise)/Pairwise]",
+       title = "Relative performance of HOI model",
+       subtitle = "Loess regression by SD ratio groups") +
+  theme_bw()
+
+print(relative_regression_HOIplot)
