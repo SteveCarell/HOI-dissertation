@@ -13,7 +13,7 @@ LV_multispecies_competition <- function(t, x, parameters) {
     pairwise_effects <- A %*% x
     saturated_pairwise <- pairwise_effects / (1 + h * abs(pairwise_effects))
     # Lotka-Volterra in matrix notation
-    dxdt <- r*x*(1 - saturated_pairwise)
+    dxdt <- x*(r - saturated_pairwise)
     
     # equivalent to the mathematical equation:
     # dxi/dt <- ri*xi - aii*xi^2 - sum(a_ij * xi * xj)
@@ -28,6 +28,8 @@ LV_multispecies_competition <- function(t, x, parameters) {
 ##HOI来咯
 HOI <- function(t, x, parameters){
   with(as.list(c(x, parameters)), {
+    x[x < THRESH] <- 0
+    x[x > 1/THRESH] <- 1/THRESH
     Bm <- A
     for (i in 1:nrow(A)){
       x_combinations <- B[i,,] %*% x
@@ -35,8 +37,7 @@ HOI <- function(t, x, parameters){
       saturated_functions <- x_combinations / (1 + h * abs(x_combinations))
       Bm[i,] <- saturated_functions
     }
-    x[x < THRESH] <- 0
-    x[x > 1/THRESH] <- 1/THRESH
+    
     dxdt <- x * (r - (A + Bm) %*% x)
     return(list(dxdt))
   })
