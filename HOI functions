@@ -53,10 +53,14 @@ HOI <- function(t, x, parameters){
   })
 }
 
-get_B_lognormal <- function(n, meanlog = 0, sdlog = 1, B_diag = 0){
+get_B <- function(n, meanlog = 0, sdlog = 1, B_diag = 0, use_norm = TRUE){
 
-  B <- round(array(rlnorm(n * n * n, meanlog = meanlog, sdlog = sdlog), c(n, n, n)), 2)
-  
+  if(use_norm){
+    B <- round(array(rnorm(n * n * n, mean = meanlog, sd = sdlog), c(n, n, n)), 2)
+  }else{
+    B <- round(array(rlnorm(n * n * n, meanlog = meanlog, sdlog = sdlog), c(n, n, n)), 2)
+  }
+
   for (i in 1:n){
 
     for (j in 1:n){
@@ -121,14 +125,14 @@ result <- foreach(i = 1:nrow(par_grid), .combine = rbind, .packages = c("deSolve
   # replace rexp with rlnorm
   
   ### generate a B matrix
-  B <- get_B_lognormal(nspp, meanlog = new_par_grid$B_mean, sdlog = new_par_grid$B_sd, B_diag = new_par_grid$B_diag)
+  B <- get_B(nspp, meanlog = new_par_grid$B_mean, sdlog = new_par_grid$B_sd, B_diag = new_par_grid$B_diag, use_norm = TRUE)
   
   # assign a diagonal to A
   diag(A) <- 1 
   
   # specify growth rates
   #r <- rgamma(nspp, shape = new_par_grid$r_shape, rate = new_par_grid$r_rate) 
-  r <- rlnorm(nspp, meanlog = 0.352, sdlog = 0.327)
+  r <- 1 
   
   # parameters and initial conditions
   parameters_2D = list(A = A, r = r)
