@@ -22,9 +22,10 @@ LV_multispecies_competition <- function(t, x, parameters) {
     
     # zero out species below the threshold    
     x[x<THRESH] <- 0
+    x[x > 1/THRESH] <- 1/THRESH
     
     # Lotka-Volterra in matrix notation
-    dxdt <- r*x*(1 - A%*%x)
+    dxdt <- x*(r - A%*%x)
     
     # equivalent to the mathematical equation:
     # dxi/dt <- ri*xi - aii*xi^2 - sum(a_ij * xi * xj)
@@ -39,13 +40,14 @@ LV_multispecies_competition <- function(t, x, parameters) {
 ##HOI model
 HOI <- function(t, x, parameters){
   with(as.list(c(x, parameters)), {
+# Fixed!! was set equal to zero, not 1/THRESH. Now, when values get large, they are capped at 1/THRESH, which will be 10,000 or 100,000 or so. 
+    x[x < THRESH] <- 0
+    x[x > 1/THRESH] <- 1/THRESH
     Bm <- A
     for (i in 1:nrow(A)){
       Bm[i,] <- B[i,,] %*% x
     }
-    x[x < THRESH] <- 0
-    # Fixed!! was set equal to zero, not 1/THRESH. Now, when values get large, they are capped at 1/THRESH, which will be 10,000 or 100,000 or so. 
-    x[x > 1/THRESH] <- 1/THRESH
+    
     dxdt <- x * (r - (A + Bm) %*% x)
     return(list(dxdt))
   })
