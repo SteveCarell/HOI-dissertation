@@ -81,6 +81,36 @@ get_B <- function(n, mu = 0, sigma = 1, B_diag = 0, use_norm = TRUE){
   return(B)
 }
 
+# test the stability after the time has reached to the end
+Comm_statbility <- function(final_state, sta_func, sta_params){
+  living_species <- which(final_state > THRESH)
+  if(length(living_species) == 0){
+    return(NA)
+  }
+  disturbance_state <- final_state
+  for(i in living_species){
+    disturbance <- runif(1, -0.1, 0.1) * final_state[i]
+    disturbance_state[i] <- max(THRESH, final_state[i] + disturbance)
+  }
+  teststa_times <- seq(0, 1e4, by = 100)
+  teststa_result <- ode(y = disturbance_state, times = teststa_times, func = sta_func, parms = sta_params, method = 'vode') %>%
+    data.frame()
+  teststa_state <- as.numeric(teststa_result[nrow(teststa_result), -1])
+  
+  living_after_disturbance <- which(teststa_state > THRESH)
+  comparison_dist_result <-  setequal(living_species, living_after_disturbance)
+  
+  if(comparison_dist_result){
+    relative_diff <- abs(teststa_state[living_species] - final_state[living_species]) / final_state[living_species]
+    max_diff <- max(relative_diff)
+    stability_result <- max_diff < 1e-3
+  } else {
+    stability_result <- FALSE
+  }
+  return(stability_result)
+}
+
+
 # start to run foreach codes
 set.seed(555)
 
@@ -177,8 +207,22 @@ result <- foreach(i = 1:nrow(par_grid), .combine = rbind, .packages = c("deSolve
   result2D[result2D<THRESH] <- 0
   result3D[result3D<THRESH] <- 0
 
-  n_end_2D <- sum(result2D[nrow(result2D), -1] > THRESH)
-  n_end_3D <- sum(result3D[nrow(result3D), -1] > THRESH)
+  # Getting the final state of the data
+  final_state_2D <- as.numeric(result2D[nrow(result2D), -1])
+  final_state_3D <- as.numeric(result3D[nrow(result3D), -1])
+
+  # running the stability function
+  stability_result_2D <- Comm_statbility(final_state = final_state_2D,
+                                       sta_func = LV_multispecies_competition,
+                                       sta_params = parameters_2D)
+  
+  stability_result_3D <- Comm_statbility(final_state = final_state_3D,
+                                       sta_func = HOI,
+                                       sta_params = parameters_3D)
+
+  # importing the data
+  n_end_2D <- sum(final_state_2D > THRESH)
+  n_end_3D <- sum(final_state_3D > THRESH)
   
   rbind(
     data.frame(
@@ -334,3 +378,155 @@ HOI_Bdiag_barplot <- ggplot(bar_HOI_data, aes(x = factor(B_mean), y = Living_Pro
   theme_bw()
 
 print(HOI_Bdiag_barplot)
+
+#showing the trend under log normal distribution
+
+
+trend_lognorm_data0 <- lognorm_data0  %>%
+  mutate(mean_ratio = B_mean / A_mean,
+         sd_ratio = B_sd / A_sd) %>%
+  mutate(sd_ratio_group = cut(sd_ratio,
+                              breaks = quantile(mean_ratio, probs = c(0, 0.33, 0.66, 1.0), na.rm = TRUE),
+                              labels = c(" Low variance ratio", "Medium variance ratio", "High rvariance ratio"),
+                              include.lowest = TRUE)
+  ) %>%
+  filter(!is.na(sd_ratio_group)) %>%
+  pivot_longer(cols = c(living_propn_HOI, living_propn_Pairwise),
+               names_to = 'model',
+               values_to = 'propn')
+  
+# real point with line
+HOI_Bdiag_0_cc <- ggplot(trend_lognorm_data0, aes(x = mean_ratio, y = propn, color = sd_ratio_group, linetype = model)) +
+  stat_summary(fun = 'mean', geom = 'line', linewidth = 1.1) +
+  facet_wrap(~ sd_ratio_group, nrow = 1) +
+  scale_color_brewer(palette = "Dark2") +
+  scale_linetype_manual(name = 'Model',
+                        values = c('living_propn_Pairwise' = 'solid' , 'living_propn_HOI' = 'dashed'),
+                        labels = c('living_propn_Pairwise' = 'Pairwise model' , 'living_propn_HOI' = 'HOI model')) +
+  labs(title = 'Coexistence trends under different models',
+       x = 'Relative strength',
+       y = 'Living propotion',
+       color = 'Relative variance',
+       linetype = 'Model') +
+  coord_cartesian(xlim = c(0, 5.5)) + 
+  theme_classic()
+
+print(HOI_Bdiag_0_cc)
+
+# while using loess regression
+HOI_Bdiag_0_cc_loess <- ggplot(trend_lognorm_data0, aes(x = mean_ratio, y = propn, color = sd_ratio_group, linetype = model)) +
+  stat_smooth(method = 'loess', se = FALSE, span = 1, linewidth = 1.1) +
+  facet_wrap(~ sd_ratio_group, nrow = 1) +
+  scale_color_brewer(palette = "Dark2") +
+  scale_linetype_manual(name = 'Model',
+                        values = c('living_propn_Pairwise' = 'solid' , 'living_propn_HOI' = 'dashed'),
+                        labels = c('living_propn_Pairwise' = 'Pairwise model' , 'living_propn_HOI' = 'HOI model')) +
+  labs(title = 'Coexistence trends under different models',
+       x = 'Relative strength',
+       y = 'Living propotion',
+       color = 'Relative variance',
+       linetype = 'Model') +
+  theme_classic()
+
+print(HOI_Bdiag_0_cc_loess)
+
+#draw another plot with B diag
+
+trend_lognorm_data1 <- lognorm_data1  %>%
+  mutate(mean_ratio = B_mean / A_mean,
+         sd_ratio = B_sd / A_sd) %>%
+  mutate(sd_ratio_group = cut(sd_ratio,
+                              breaks = quantile(mean_ratio, probs = c(0, 0.33, 0.66, 1.0), na.rm = TRUE),
+                              labels = c(" Low variance ratio", "Medium variance ratio", "High rvariance ratio"),
+                              include.lowest = TRUE)
+  ) %>%
+  filter(!is.na(sd_ratio_group)) %>%
+  pivot_longer(cols = c(living_propn_HOI, living_propn_Pairwise),
+               names_to = 'model',
+               values_to = 'propn')
+
+# still using loess one
+HOI_Bdiag_1_cc_loess <- ggplot(trend_lognorm_data1, aes(x = mean_ratio, y = propn, color = sd_ratio_group, linetype = model)) +
+  stat_smooth(method = 'loess', se = FALSE, span = 1, linewidth = 1.1) +
+  facet_wrap(~ sd_ratio_group, nrow = 1) +
+  scale_color_brewer(palette = "Dark2") +
+  scale_linetype_manual(name = 'Model',
+                        values = c('living_propn_Pairwise' = 'solid' , 'living_propn_HOI' = 'dashed'),
+                        labels = c('living_propn_Pairwise' = 'Pairwise model' , 'living_propn_HOI' = 'HOI model')) +
+  labs(title = 'Coexistence trends under different models',
+       x = 'Relative strength',
+       y = 'Living propotion',
+       color = 'Relative variance',
+       linetype = 'Model') +
+  theme_classic()
+
+print(HOI_Bdiag_1_cc_loess)
+
+# if using the original one
+HOI_Bdiag_1_cc <- ggplot(trend_lognorm_data1, aes(x = mean_ratio, y = propn, color = sd_ratio_group, linetype = model)) +
+  stat_summary(fun = 'mean', geom = 'line', linewidth = 1.1) +
+  facet_wrap(~ sd_ratio_group, nrow = 1) +
+  scale_color_brewer(palette = "Dark2") +
+  scale_linetype_manual(name = 'Model',
+                        values = c('living_propn_Pairwise' = 'solid' , 'living_propn_HOI' = 'dashed'),
+                        labels = c('living_propn_Pairwise' = 'Pairwise model' , 'living_propn_HOI' = 'HOI model')) +
+  labs(title = 'Coexistence trends under different models',
+       x = 'Relative strength',
+       y = 'Living propotion',
+       color = 'Relative variance',
+       linetype = 'Model') +
+  coord_cartesian(xlim = c(0, 5.5)) +
+  theme_classic()
+
+print(HOI_Bdiag_1_cc)
+
+# with normal distribution
+
+norm_data1 <- read.csv("cc_Bdiag1_norm_dist1_1.csv") %>% mutate(B_diag = 1)
+
+trend_norm_data1 <- norm_data1  %>%
+  mutate(mean_ratio = B_mean / A_mean,
+         sd_ratio = B_sd / A_sd) %>%
+  mutate(sd_ratio_group = cut(sd_ratio,
+                              breaks = quantile(mean_ratio, probs = c(0, 0.33, 0.66, 1.0), na.rm = TRUE),
+                              labels = c(" Low variance ratio", "Medium variance ratio", "High rvariance ratio"),
+                              include.lowest = TRUE)
+  ) %>%
+  filter(!is.na(sd_ratio_group)) %>%
+  pivot_longer(cols = c(living_propn_HOI, living_propn_Pairwise),
+               names_to = 'model',
+               values_to = 'propn')
+
+
+HOI_norm_Bdiag_1_cc <- ggplot(trend_norm_data1, aes(x = mean_ratio, y = propn, color = sd_ratio_group, linetype = model)) +
+  stat_summary(fun = 'mean', geom = 'line', linewidth = 1.1) +
+  facet_wrap(~ sd_ratio_group, nrow = 1) +
+  scale_color_brewer(palette = "Dark2") +
+  scale_linetype_manual(name = 'Model',
+                        values = c('living_propn_Pairwise' = 'solid' , 'living_propn_HOI' = 'dashed'),
+                        labels = c('living_propn_Pairwise' = 'Pairwise model' , 'living_propn_HOI' = 'HOI model')) +
+  labs(title = 'Coexistence trends under different models',
+       x = 'Relative strength',
+       y = 'Living propotion',
+       color = 'Relative variance',
+       linetype = 'Model') +
+  theme_classic()
+
+print(HOI_Bdiag_1_cc)
+
+#loess with normal distribution
+HOI_norm_Bdiag_1_cc_loess <- ggplot(trend_norm_data1, aes(x = mean_ratio, y = propn, color = sd_ratio_group, linetype = model)) +
+  stat_smooth(method = 'loess', se = FALSE, span = 1, linewidth = 1.1) +
+  facet_wrap(~ sd_ratio_group, nrow = 1) +
+  scale_color_brewer(palette = "Dark2") +
+  scale_linetype_manual(name = 'Model',
+                        values = c('living_propn_Pairwise' = 'solid' , 'living_propn_HOI' = 'dashed'),
+                        labels = c('living_propn_Pairwise' = 'Pairwise model' , 'living_propn_HOI' = 'HOI model')) +
+  labs(title = 'Coexistence trends under different models',
+       x = 'Relative strength',
+       y = 'Living propotion',
+       color = 'Relative variance',
+       linetype = 'Model') +
+  theme_classic()
+
+print(HOI_norm_Bdiag_1_cc_loess)
