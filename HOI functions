@@ -234,6 +234,7 @@ result <- foreach(i = 1:nrow(par_grid), .combine = rbind, .packages = c("deSolve
       B_sd = new_par_grid$B_sd,
       B_diag = new_par_grid$B_diag,
       n_end = n_end_2D,
+      stability_result = stability_result_2D,
       model = "Pairwise"
     ),
     data.frame(
@@ -245,6 +246,7 @@ result <- foreach(i = 1:nrow(par_grid), .combine = rbind, .packages = c("deSolve
       B_sd = new_par_grid$B_sd,
       B_diag = new_par_grid$B_diag,
       n_end = n_end_3D,
+      stability_result = stability_result_3D,
       model = "HOI"
     )
   )
@@ -260,15 +262,17 @@ result <- result %>% mutate(propn = n_end / n_start)
 #combine the different simulation results into one result
 coexistence_comparison <- result %>% 
   group_by(model, A_mean, A_sd, B_mean, B_sd) %>%
-  summarize(mean_propn = mean(propn), .groups = 'drop')
+  summarize(mean_propn = mean(propn),
+            stability_rate = mean(stability_result, na.rm = TRUE), 
+            .groups = 'drop')
 
 #write the dataset into a csv file
 HOI_dataset <- coexistence_comparison %>%
   pivot_wider(names_from = model,
-              values_from = mean_propn,
-              names_prefix = 'living_propn_')%>%
-  mutate(HOI_effect = living_propn_HOI - living_propn_Pairwise,
-         HOI_relative = living_propn_HOI/living_propn_Pairwise)
+              values_from = c(mean_propn, stability_rate),
+              names_sep = '_')%>%
+  mutate(HOI_effect = mean_propn_HOI - mean_propn_Pairwise,
+         HOI_relative = mean_propn_HOI/mean_propn_Pairwise)
 write.csv(HOI_dataset,'coexistence_comparison.csv', row.names = FALSE)
 
 #import the dataset
